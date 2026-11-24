@@ -7,6 +7,8 @@ a tab open.
 
 - **Bar icon**: the PodOS rings, lit in your theme's active colour with an
   unread count when something needs you.
+- **Header** like Omarchy's own panels: "PodOS · @you" and a summary line
+  (unread count, plus Doing and Need counts when the Tasks tab is on).
 - **Notifications tab**: your user notifications (mentions, task comments,
   assignments; not project-wide alerts), unread and read in one list. They are
   grouped by thread the way the PodOS dashboard groups them, under day headings,
@@ -44,7 +46,9 @@ You need Omarchy with its Quickshell shell, `python3`, and a PodOS MCP token.
    ```
 
 3. Optionally, turn on the Tasks tab by setting `tasksProject` to a PodOS
-   project code (the `?project=…` part of a dashboard URL). Use the widget's
+   project code (the `?project=…` part of a dashboard URL). Your name in the
+   header is also looked up in this project, so without it the header just
+   says "PodOS". Use the widget's
    settings, or add it to the widget's entry in `~/.config/omarchy/shell.json`:
 
    ```json
@@ -96,7 +100,8 @@ token for a short-lived login token, lists notifications, marks them read or
 unread, and lists tasks. The QML widget runs it on a timer.
 
 - **Files.** It writes the login token and the IDs of notifications it has
-  already shown pop-ups for to `~/.local/state/omarchy-podos/` (mode 600).
+  already shown pop-ups for, and your display name (cached for a day), to
+  `~/.local/state/omarchy-podos/` (mode 600).
   Avatars are cached in `~/.cache/omarchy-podos/avatars/`.
 - **First run.** The first poll only records what is already there, so you don't
   get a pop-up for every old notification.

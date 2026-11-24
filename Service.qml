@@ -14,6 +14,8 @@ Item {
   property bool more: false
   property var groups: []
   property var tasks: []
+  // { username, firstName } from the tasks project, or null.
+  property var user: null
   property string fetchedAt: ""
   property string actionStatus: ""
   // Read state flipped optimistically after a click ("read" or "unread"
@@ -100,6 +102,7 @@ Item {
     more = data.more === true
     groups = Array.isArray(data.groups) ? data.groups : []
     tasks = Array.isArray(data.tasks) ? data.tasks : []
+    user = data.user && typeof data.user === "object" ? data.user : null
     fetchedAt = String(data.fetchedAt || "")
     overrides = ({})
   }

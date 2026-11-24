@@ -54,6 +54,22 @@ Panel {
   }
   readonly property int count: podos.visibleUnread
   readonly property int doingCount: taskCount("doing")
+  readonly property string heroTitle: {
+    var user = podos.user
+    var name = user ? (user.username ? "@" + user.username : String(user.firstName || "")) : ""
+    return name !== "" ? strings.t("hero.title").arg(name) : strings.t("hero.titlePlain")
+  }
+  // Why the bar icon is (or isn't) lit, plus the task counts when enabled.
+  readonly property string heroMeta: {
+    if (podos.state === "loading") return strings.t("loading")
+    if (podos.state !== "ready") return podos.message
+    var parts = [count > 0 ? strings.t("meta.unread").arg(countText) : strings.t("meta.caughtUp")]
+    if (podos.tasksProject !== "") {
+      parts.push(strings.t("meta.doing").arg(doingCount))
+      parts.push(strings.t("meta.need").arg(taskCount("need")))
+    }
+    return parts.join(" · ")
+  }
   readonly property string countText: count > 99 || (podos.more && count >= 99) ? "99+" : String(count)
 
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
@@ -276,69 +292,103 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(10)
 
-          // Header: the PodOS mark, the tabs, and the actions for this tab.
-          RowLayout {
+          // Header, like the other Omarchy panels: the PodOS mark, who you
+          // are, a one-line summary, and the actions. The trailing controls
+          // reach panel state through `header`, because inside the hero's
+          // component `root` is the hero itself.
+          Item {
+            id: header
             width: parent.width
-            spacing: Style.space(10)
+            implicitHeight: hero.implicitHeight
+            readonly property bool tasksTab: root.tasksTab
+            readonly property bool hasUnread: root.count > 0
+            function openPodos() { root.openPodos() }
 
-            PodosIcon {
-              iconSize: Style.font.heading
-              color: root.foreground
-              Layout.alignment: Qt.AlignVCenter
-            }
-
-            ButtonGroup {
-              value: root.tab
-              focusable: false
+            PanelHero {
+              id: hero
+              width: parent.width
+              title: root.heroTitle
+              meta: root.heroMeta
               foreground: root.foreground
               fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              Layout.alignment: Qt.AlignVCenter
-              options: {
-                var out = [
-                  { value: "notifications", label: root.count > 0 ? strings.t("tab.notificationsCount").arg(root.countText) : strings.t("tab.notifications") }
-                ]
-                if (podos.tasksProject !== "")
-                  out.push({ value: "tasks", label: root.doingCount > 0 ? strings.t("tab.tasksCount").arg(root.doingCount) : strings.t("tab.tasks") })
-                return out
+              iconComponent: Component {
+                PodosIcon {
+                  iconSize: Style.font.display
+                  color: hero.foreground
+                }
               }
-              onChanged: function(value) { root.setTab(value) }
-            }
+              trailingControl: Component {
+                Row {
+                  spacing: Style.space(4)
 
-            Item { Layout.fillWidth: true; implicitHeight: 1 }
+                  // Spins while PodOS is being fetched; holds its space when
+                  // idle so the buttons never move under the pointer.
+                  Item {
+                    width: Style.space(22)
+                    height: Style.space(22)
+                    anchors.verticalCenter: parent.verticalCenter
+                    opacity: podos.loading ? 1 : 0
 
-            PanelActionButton {
-              iconText: "󰑐"
-              tooltipText: strings.t("refresh")
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              enabled: !podos.loading
-              onClicked: podos.refresh()
+                    Text {
+                      anchors.centerIn: parent
+                      textFormat: Text.PlainText
+                      text: "󰑐"
+                      color: hero.dim
+                      font.family: hero.fontFamily
+                      font.pixelSize: Style.font.icon
+                      RotationAnimation on rotation {
+                        from: 0
+                        to: 360
+                        duration: 900
+                        loops: Animation.Infinite
+                        running: podos.loading
+                      }
+                    }
+                  }
+
+                  PanelActionButton {
+                    visible: !header.tasksTab
+                    iconText: "󰸞"
+                    tooltipText: strings.t("markAllRead")
+                    foreground: hero.foreground
+                    fontFamily: hero.fontFamily
+                    enabled: header.hasUnread
+                    onClicked: podos.markAllRead()
+                  }
+                  PanelActionButton {
+                    iconText: "󰏌"
+                    tooltipText: header.tasksTab ? strings.t("openBoard") : strings.t("openInbox")
+                    foreground: hero.foreground
+                    fontFamily: hero.fontFamily
+                    onClicked: header.openPodos()
+                  }
+                }
+              }
             }
-            PanelActionButton {
-              visible: !root.tasksTab
-              iconText: "󰸞"
-              tooltipText: strings.t("markAllRead")
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              enabled: root.count > 0
-              onClicked: podos.markAllRead()
+          }
+
+          ButtonGroup {
+            value: root.tab
+            focusable: false
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            options: {
+              var out = [
+                { value: "notifications", label: root.count > 0 ? strings.t("tab.notificationsCount").arg(root.countText) : strings.t("tab.notifications") }
+              ]
+              if (podos.tasksProject !== "")
+                out.push({ value: "tasks", label: root.doingCount > 0 ? strings.t("tab.tasksCount").arg(root.doingCount) : strings.t("tab.tasks") })
+              return out
             }
-            PanelActionButton {
-              iconText: "󰏌"
-              tooltipText: root.tasksTab ? strings.t("openBoard") : strings.t("openInbox")
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onClicked: root.openPodos()
-            }
+            onChanged: function(value) { root.setTab(value) }
           }
 
           PlainLabel {
             visible: text !== ""
             width: parent.width
-            text: podos.actionStatus !== "" ? podos.actionStatus
-              : (podos.state !== "ready" && podos.state !== "loading" ? podos.message : "")
-            color: podos.actionStatus !== "" ? root.dim : root.urgent
+            text: podos.actionStatus
+            color: root.dim
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
           }

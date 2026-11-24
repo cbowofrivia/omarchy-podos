@@ -15,7 +15,8 @@ Commands (all print one JSON object on stdout):
       workflow thread the way the PodOS dashboard groups them. --notify
       sends a desktop pop-up for each unread notification not seen on an
       earlier run. --tasks-project also lists your Doing tasks in that
-      project, with Need ones after them. Sender avatars are cached under ~/.cache/omarchy-podos.
+      project, with Need ones after them, and your name from that project
+      for the panel header. Sender avatars are cached under ~/.cache/omarchy-podos.
   read ID [ID...]
       Mark notifications read.
   unread ID [ID...]
@@ -67,6 +68,8 @@ AVATAR_PATH = re.compile(r"^/[A-Za-z0-9._-]{1,200}$")
 AVATAR_MAX = 1024 * 1024
 PROJECT_CODE = re.compile(r"^[a-z0-9-]{1,80}$")
 SEEN_FILE = STATE_DIR / "seen.json"
+PROFILE_FILE = STATE_DIR / "profile.json"
+PROFILE_TTL = 24 * 3600
 
 TIMEOUT = 15
 MAX_BYTES = 2 * 1024 * 1024
@@ -226,6 +229,31 @@ def user_id():
         return str(claims.get("sub") or "")
     except (OSError, IndexError, ValueError):
         return ""
+
+
+def profile(project):
+    """The user's display name for the panel header, looked up in the tasks
+    project (the API has no "me" endpoint) and cached for a day."""
+    owner = user_id()
+    try:
+        cached = json.loads(PROFILE_FILE.read_text())
+        if cached.get("id") == owner and time.time() - cached.get("at", 0) < PROFILE_TTL:
+            return cached["user"]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    user = {"username": "", "firstName": ""}
+    if owner and PROJECT_CODE.match(project):
+        query = urllib.parse.urlencode({"search": owner, "pageSize": 5})
+        try:
+            data = api("GET", f"/v1/projects/{project}/users?{query}")
+        except ApiError:
+            return user
+        for entry in data.get("users") or []:
+            if isinstance(entry, dict) and entry.get("id") == owner:
+                user = {"username": clean(entry.get("username"))[:60], "firstName": clean(entry.get("firstName"))[:60]}
+                break
+    write_private(PROFILE_FILE, json.dumps({"id": owner, "at": time.time(), "user": user}))
+    return user
 
 
 def plain(content):
@@ -466,10 +494,12 @@ def main(argv):
             if "--notify" in args:
                 popups(items, int_arg(args, "--popup-limit", 5, 1, 20))
             read_groups = int_arg(args, "--read-groups", 20, 0, 100)
-            tasks = None
+            tasks, user = None, None
             if "--tasks-project" in args:
                 index = args.index("--tasks-project") + 1
-                tasks = my_tasks(args[index] if index < len(args) else "")
+                project = args[index] if index < len(args) else ""
+                tasks = my_tasks(project)
+                user = profile(project)
             read_items, _ = fetch(READ, 500, read_groups) if read_groups > 0 else ([], False)
             emit({
                 "state": "ready",
@@ -477,6 +507,7 @@ def main(argv):
                 "more": more,
                 "groups": with_avatars(group(items + read_items, read_groups)),
                 "tasks": tasks,
+                "user": user,
                 "inboxUrl": INBOX_URL,
                 "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })

@@ -1,7 +1,6 @@
 {
   "loading": "Loading…",
   "empty": "No notifications",
-  "refresh": "Refresh (r)",
   "markAllRead": "Mark all read (a)",
   "openInbox": "Open PodOS inbox (i)",
   "markRead": "Mark read (m)",
@@ -20,5 +19,11 @@
   "status.doing": "Doing (%1)",
   "status.need": "Need (%1)",
   "tab.notifications": "Notifications",
-  "tab.notificationsCount": "Notifications (%1)"
+  "tab.notificationsCount": "Notifications (%1)",
+  "hero.title": "PodOS · %1",
+  "hero.titlePlain": "PodOS",
+  "meta.unread": "%1 unread",
+  "meta.caughtUp": "All caught up",
+  "meta.doing": "%1 doing",
+  "meta.need": "%1 need"
 }
