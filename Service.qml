@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Schedules the podos-notify helper and exposes its result to the panel.
+// Schedules the omarchy-podos-fetch helper and exposes its result to the panel.
 // The helper owns auth, the API calls, grouping and desktop pop-ups.
 Item {
   id: root
@@ -75,7 +75,7 @@ Item {
   }
 
   function helperPath() {
-    return decodeURIComponent(Qt.resolvedUrl("podos-notify").toString().replace(/^file:\/\//, ""))
+    return decodeURIComponent(Qt.resolvedUrl("omarchy-podos-fetch").toString().replace(/^file:\/\//, ""))
   }
 
   function refresh() {

@@ -25,22 +25,22 @@ You need Omarchy with its Quickshell shell, `python3`, and a PodOS MCP token.
 1. Add the plugin and put it on the bar:
 
    ```bash
-   omarchy plugin add https://github.com/cbowofrivia/omarchy-podos-notifications --enable
+   omarchy plugin add https://github.com/cbowofrivia/omarchy-podos --enable
    ```
 
 2. Save your token. Create one at <https://podos.io/integrations/mcp>, then put
    it in a file only you can read:
 
    ```bash
-   install -d -m700 ~/.config/podos-notify
-   ( umask 077; ${EDITOR:-nano} ~/.config/podos-notify/token )
+   install -d -m700 ~/.config/omarchy-podos
+   ( umask 077; ${EDITOR:-nano} ~/.config/omarchy-podos/token )
    ```
 
    If the PodOS MCP server is already set up in Claude Code, you can reuse its
    token without it appearing on screen:
 
    ```bash
-   jq -r .mcpServers.podos.env.PODOS_TOKEN ~/.claude.json | install -m600 /dev/stdin ~/.config/podos-notify/token
+   jq -r .mcpServers.podos.env.PODOS_TOKEN ~/.claude.json | install -m600 /dev/stdin ~/.config/omarchy-podos/token
    ```
 
 3. Optionally, turn on the Tasks tab by setting `tasksProject` to a PodOS
@@ -48,17 +48,17 @@ You need Omarchy with its Quickshell shell, `python3`, and a PodOS MCP token.
    settings, or add it to the widget's entry in `~/.config/omarchy/shell.json`:
 
    ```json
-   { "id": "podos.notifications", "tasksProject": "your-project-code" }
+   { "id": "cbowofrivia.podos", "tasksProject": "your-project-code" }
    ```
 
 4. Restart the shell, then check it:
 
    ```bash
    omarchy restart shell
-   omarchy-shell podos.notifications status   # "ready <unread count>"
+   omarchy-shell cbowofrivia.podos status   # "ready <unread count>"
    ```
 
-Update later with `omarchy plugin update podos.notifications`.
+Update later with `omarchy plugin update cbowofrivia.podos`.
 
 ## Use
 
@@ -75,7 +75,7 @@ Update later with `omarchy plugin update podos.notifications`.
 To open the panel on a tab from a script or a Hyprland key binding:
 
 ```bash
-omarchy-shell podos.notifications showTab notifications   # or tasks
+omarchy-shell cbowofrivia.podos showTab notifications   # or tasks
 ```
 
 ## Settings
@@ -90,14 +90,14 @@ omarchy-shell podos.notifications showTab notifications   # or tasks
 
 ## How it works
 
-`podos-notify` is a small Python helper (standard library only) that calls the
+`omarchy-podos-fetch` is a small Python helper (standard library only) that calls the
 PodOS public API, the same endpoints the PodOS MCP server uses. It swaps your
 token for a short-lived login token, lists notifications, marks them read or
 unread, and lists tasks. The QML widget runs it on a timer.
 
 - **Files.** It writes the login token and the IDs of notifications it has
-  already shown pop-ups for to `~/.local/state/podos-notify/` (mode 600).
-  Avatars are cached in `~/.cache/podos-notify/avatars/`.
+  already shown pop-ups for to `~/.local/state/omarchy-podos/` (mode 600).
+  Avatars are cached in `~/.cache/omarchy-podos/avatars/`.
 - **First run.** The first poll only records what is already there, so you don't
   get a pop-up for every old notification.
 - **Links and avatars.** Links only open, and avatars are only downloaded (1 MB
@@ -108,9 +108,9 @@ unread, and lists tasks. The QML widget runs it on a timer.
 The helper can be run by hand. Every command prints JSON:
 
 ```bash
-./podos-notify list --tasks-project your-project-code
-./podos-notify read <notification-id>...
-./podos-notify --help
+./omarchy-podos-fetch list --tasks-project your-project-code
+./omarchy-podos-fetch read <notification-id>...
+./omarchy-podos-fetch --help
 ```
 
 ## Troubleshooting

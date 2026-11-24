@@ -10,7 +10,7 @@ Item {
   id: avatar
 
   property string name: ""
-  // Local cached file path from podos-notify, "" for none.
+  // Local cached file path from omarchy-podos-fetch, "" for none.
   property string source: ""
   property real size: Style.space(28)
   property color foreground: Commons.Color.foreground

@@ -8,8 +8,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "podos.notifications"
-  ipcTarget: "podos.notifications"
+  moduleName: "cbowofrivia.podos"
+  ipcTarget: "cbowofrivia.podos"
   manageIpc: false
 
   readonly property Item panelFlick: panel.loadedContent ? panel.loadedContent.panelFlick : null
@@ -178,7 +178,7 @@ Panel {
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
-    // e.g. `omarchy-shell podos.notifications showTab tasks`
+    // e.g. `omarchy-shell cbowofrivia.podos showTab tasks`
     function showTab(name: string): void {
       if (!root.opened) root.open()
       Qt.callLater(function() { root.setTab(name) })
