@@ -1,11 +1,15 @@
 import QtQuick
-import QtQuick.Effects
+import QtQuick.Shapes
 import qs.Commons
 import qs.Commons as Commons
 
 // A sender's PodOS avatar from the helper's local cache, or the first
-// letter of their name on a disc when there is none. Built like the
-// Elsewhen plugin's avatar.
+// letter of their name on a disc when there is none.
+//
+// The photo is painted straight into a circular Shape (fillItem), with no
+// layer or MultiEffect mask. One MultiEffect per row left GPU work behind
+// that grew with every panel rebuild, and closing the panel then froze the
+// whole shell (bar and notifications) for 10-25 seconds.
 Item {
   id: avatar
 
@@ -54,26 +58,22 @@ Item {
     smooth: true
   }
 
-  Item {
-    id: disc
-    anchors.fill: parent
-    visible: false
-    layer.enabled: true
-
-    Rectangle {
-      anchors.fill: parent
-      radius: width / 2
-      color: "black"
-    }
-  }
-
-  MultiEffect {
+  Shape {
     anchors.fill: parent
     visible: avatar.pictured
-    source: picture
-    maskEnabled: true
-    maskSource: disc
-    maskThresholdMin: 0.5
-    maskSpreadAtMin: 1.0
+    preferredRendererType: Shape.CurveRenderer
+
+    ShapePath {
+      strokeWidth: -1
+      fillItem: picture
+      PathAngleArc {
+        centerX: avatar.width / 2
+        centerY: avatar.height / 2
+        radiusX: avatar.width / 2
+        radiusY: avatar.height / 2
+        startAngle: 0
+        sweepAngle: 360
+      }
+    }
   }
 }
