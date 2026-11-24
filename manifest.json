@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "id": "podos.notifications",
+  "name": "PodOS Notifications",
+  "version": "1.0.0",
+  "author": "Charles R. Bowen",
+  "license": "MIT",
+  "description": "PodOS notifications and tasks in the Omarchy bar, with desktop pop-ups for new notifications.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "PodOS",
+    "description": "Your PodOS user notifications grouped by day, with desktop pop-ups, and optionally your Doing and Need tasks.",
+    "category": "Development",
+    "aliases": [
+      "podos",
+      "notifications",
+      "tasks"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 60,
+      "desktopNotifications": true,
+      "tasksProject": "",
+      "apiUrl": "https://api.podos.io",
+      "dashboardUrl": "https://podos.io"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 60
+      },
+      {
+        "key": "desktopNotifications",
+        "type": "boolean",
+        "label": "Desktop pop-ups for new notifications",
+        "defaultValue": true,
+        "description": "Polls PodOS in the background and shows a desktop notification for each new user notification, with Open and Mark read buttons."
+      },
+      {
+        "key": "tasksProject",
+        "type": "string",
+        "label": "Tasks project",
+        "defaultValue": "",
+        "description": "PodOS project code (as in ?project=… on the dashboard) whose Doing and Need tasks owned by you appear in the Tasks tab. Leave empty to hide the tab."
+      },
+      {
+        "key": "apiUrl",
+        "type": "string",
+        "label": "PodOS API URL",
+        "defaultValue": "https://api.podos.io",
+        "description": "Base URL of the PodOS API. Only change this for a non-production PodOS."
+      },
+      {
+        "key": "dashboardUrl",
+        "type": "string",
+        "label": "PodOS dashboard URL",
+        "defaultValue": "https://podos.io",
+        "description": "Base URL of the PodOS dashboard. Links open, and avatars are fetched, only on this host and its subdomains."
+      }
+    ]
+  }
+}

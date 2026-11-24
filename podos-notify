@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""PodOS notifications helper for the Omarchy bar widget.
+
+Talks to the PodOS public API directly, the same endpoints the PodOS MCP
+server wraps:
+
+  POST  /v1/auth/token                  grant token -> short-lived JWT
+  GET   /v1/notifications               list (search: group:user read:unread)
+  PATCH /v1/notifications/{id}          {"read": true}
+
+Commands (all print one JSON object on stdout):
+
+  list [--limit N] [--read-groups N] [--notify] [--popup-limit N] [--tasks-project CODE]
+      Unread and recently read user-group notifications, grouped by
+      workflow thread the way the PodOS dashboard groups them. --notify
+      sends a desktop pop-up for each unread notification not seen on an
+      earlier run. --tasks-project also lists your Doing tasks in that
+      project, with Need ones after them. Sender avatars are cached under ~/.cache/podos-notify.
+  read ID [ID...]
+      Mark notifications read.
+  unread ID [ID...]
+      Mark notifications unread.
+  open URL ID [ID...]
+      Mark notifications read, then open URL in the browser. Used as the
+      click target of desktop pop-ups and panel rows.
+  read-all
+      Mark every unread user-group notification read.
+
+Global options, before or after the command:
+
+  --api URL         PodOS API base (default https://api.podos.io, or $PODOS_API_URL)
+  --dashboard URL   PodOS dashboard base (default https://podos.io). Links are
+                    only opened, and avatars only fetched, on this host and its
+                    subdomains.
+
+The grant token is read from $PODOS_TOKEN, else ~/.config/podos-notify/token.
+"""
+
+import base64
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+BASE_URL = re.compile(r"^https://[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?(?:/[A-Za-z0-9._~/-]*)?$", re.I)
+API = os.environ.get("PODOS_API_URL", "https://api.podos.io").rstrip("/")
+DASHBOARD = "https://podos.io"
+INBOX_PATH = "/inbox?search-notification=group%3Auser"
+INBOX_URL = DASHBOARD + INBOX_PATH
+UNREAD = "group:user read:unread"
+READ = "group:user read:read"
+
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "podos-notify"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "podos-notify"
+TOKEN_FILE = CONFIG_DIR / "token"
+JWT_FILE = STATE_DIR / "jwt"
+AVATAR_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "podos-notify" / "avatars"
+AVATAR_PATH = re.compile(r"^/[A-Za-z0-9._-]{1,200}$")
+AVATAR_MAX = 1024 * 1024
+PROJECT_CODE = re.compile(r"^[a-z0-9-]{1,80}$")
+SEEN_FILE = STATE_DIR / "seen.json"
+
+TIMEOUT = 15
+MAX_BYTES = 2 * 1024 * 1024
+MAX_TEXT = 400
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+WORKFLOW = re.compile(r"/workflow/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[?#]|$)", re.I)
+THREAD = re.compile(r"(?:^|[?&])thread=(\d+)(?:&|$)")
+
+
+def configure(api, dashboard):
+    global API, DASHBOARD, INBOX_URL
+    for name, value in (("--api", api), ("--dashboard", dashboard)):
+        if value is not None and not BASE_URL.match(value):
+            raise SystemExit(f"{name} must be an https:// base URL")
+    if api:
+        API = api.rstrip("/")
+    if dashboard:
+        DASHBOARD = dashboard.rstrip("/")
+        INBOX_URL = DASHBOARD + INBOX_PATH
+
+
+def trusted_host(hostname):
+    """The dashboard's host or one of its subdomains."""
+    home = (urllib.parse.urlsplit(DASHBOARD).hostname or "").lower()
+    host = (hostname or "").lower()
+    return bool(home) and (host == home or host.endswith("." + home))
+
+
+class ApiError(Exception):
+    def __init__(self, message, state="error"):
+        super().__init__(message)
+        self.state = state
+
+
+def emit(payload, code=0):
+    sys.stdout.write(json.dumps(payload))
+    sys.stdout.write("\n")
+    sys.exit(code)
+
+
+def write_private(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+
+
+def grant_token():
+    token = os.environ.get("PODOS_TOKEN", "").strip()
+    if not token and TOKEN_FILE.is_file():
+        token = TOKEN_FILE.read_text().strip()
+    if not token:
+        raise ApiError(f"No PodOS token. Put your MCP token in {TOKEN_FILE}.", "unauthenticated")
+    return token
+
+
+def http(method, url, body=None, bearer=None):
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", "omarchy-podos-notifications")
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    if bearer:
+        request.add_header("Authorization", f"Bearer {bearer}")
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            raw = response.read(MAX_BYTES + 1)
+            status = response.status
+    except urllib.error.HTTPError as error:
+        raw = error.read(MAX_BYTES + 1)
+        status = error.code
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise ApiError(f"Could not reach PodOS: {getattr(error, 'reason', error)}", "offline")
+    if len(raw) > MAX_BYTES:
+        raise ApiError("PodOS response was too large.")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        parsed = {}
+    return status, parsed
+
+
+def exchange():
+    status, data = http("POST", f"{API}/v1/auth/token", {"type": "authorization_code", "code": grant_token()})
+    jwt = data.get("token") if isinstance(data, dict) else None
+    if status >= 400 or not jwt:
+        raise ApiError(f"PodOS rejected the token ({status}). Check {TOKEN_FILE}.", "unauthenticated")
+    write_private(JWT_FILE, jwt)
+    return jwt
+
+
+def api(method, path, body=None):
+    jwt = JWT_FILE.read_text().strip() if JWT_FILE.is_file() else ""
+    if not jwt:
+        jwt = exchange()
+    status, data = http(method, f"{API}{path}", body, jwt)
+    if status == 401:
+        status, data = http(method, f"{API}{path}", body, exchange())
+    if status >= 400:
+        message = data.get("message") if isinstance(data, dict) else None
+        raise ApiError(f"PodOS API error {status}: {message or 'request failed'}")
+    return data
+
+
+def clean(value):
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:MAX_TEXT]
+
+
+def link_for(action):
+    action = str(action or "").strip()
+    if action.startswith("/") and not action.startswith("//"):
+        return DASHBOARD + action
+    parsed = urllib.parse.urlsplit(action)
+    if parsed.scheme == "https" and trusted_host(parsed.hostname):
+        return action
+    return INBOX_URL
+
+
+def avatar_for(url):
+    """Cached local copy of a sender avatar, or "" when there is none.
+    Only fetched from the dashboard's host or its subdomains (PodOS serves
+    them from images.podos.io), with a size cap."""
+    url = str(url or "")
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "https" or not trusted_host(parsed.hostname) or parsed.query
+            or parsed.port or not AVATAR_PATH.match(parsed.path)):
+        return ""
+    path = AVATAR_DIR / hashlib.sha1(url.encode()).hexdigest()
+    if path.is_file():
+        return str(path)
+    request = urllib.request.Request(url, headers={"User-Agent": "omarchy-podos-notifications"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if not response.headers.get_content_type().startswith("image/"):
+                return ""
+            data = response.read(AVATAR_MAX + 1)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return ""
+    if len(data) > AVATAR_MAX:
+        return ""
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return str(path)
+
+
+def user_id():
+    """The PodOS user id is the `sub` claim of the JWT the API hands out."""
+    try:
+        payload = JWT_FILE.read_text().strip().split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return str(claims.get("sub") or "")
+    except (OSError, IndexError, ValueError):
+        return ""
+
+
+def plain(content):
+    text = re.sub(r"<(br|/p|/div|/li)[^>]*>", "\n", str(content or ""), flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    lines = [re.sub(r"[ \t\u00a0]+", " ", line).strip() for line in text.splitlines()]
+    return clean(" ".join(line for line in lines if line))
+
+
+TASK_STATUSES = ("doing", "need")
+
+
+def my_tasks(project):
+    if not PROJECT_CODE.match(project):
+        raise ApiError(f"Invalid tasks project {project!r}.")
+    owner = user_id()
+    if not owner:
+        api("GET", "/v1/notifications?pageSize=1")  # refreshes the JWT
+        owner = user_id()
+    statuses = " ".join(f"status:{status}" for status in TASK_STATUSES)
+    query = urllib.parse.urlencode({"search": f"{statuses} owner:{owner}"})
+    data = api("GET", f"/v1/projects/{project}/tasks?{query}")
+    tasks = []
+    for task in data.get("tasks") or []:
+        if not isinstance(task, dict) or task.get("owner") != owner or task.get("status") not in TASK_STATUSES:
+            continue
+        if not UUID.match(str(task.get("id", ""))):
+            continue
+        progress = task.get("workProgress")
+        hours = task.get("estimatedHours")
+        tasks.append({
+            "id": task["id"],
+            "displayId": int(task.get("displayId") or 0),
+            "status": task["status"],
+            "title": plain(task.get("content")) or "Untitled task",
+            "progress": max(0, min(100, int(progress))) if isinstance(progress, (int, float)) else 0,
+            "estimate": float(hours) if isinstance(hours, (int, float)) else None,
+            "updatedAt": clean(task.get("updatedAt"))[:40],
+            "url": f"{DASHBOARD}/workflow/{task['id']}?project={project}",
+        })
+    # Doing first, then Need; newest activity first within each.
+    tasks.sort(key=lambda t: t["updatedAt"], reverse=True)
+    tasks.sort(key=lambda t: TASK_STATUSES.index(t["status"]))
+    return tasks[:80]
+
+
+def group_key(notification):
+    action = urllib.parse.unquote(str(notification.get("action") or ""))
+    workflow = WORKFLOW.search(action)
+    if workflow:
+        return "workflow:" + workflow.group(1).lower()
+    thread = THREAD.search(action)
+    if thread:
+        return "thread:" + thread.group(1)
+    return "id:" + notification["id"]
+
+
+def fetch(search, limit, groups=0):
+    """Fetch up to `limit` notifications. With `groups`, stop early once
+    that many distinct threads are in hand, so one busy thread cannot use
+    up the whole budget."""
+    items, keys, token = [], set(), None
+    while len(items) < limit and not (groups and len(keys) > groups):
+        query = {"search": search, "pageSize": min(100, limit - len(items))}
+        if token:
+            query["pageToken"] = token
+        data = api("GET", "/v1/notifications?" + urllib.parse.urlencode(query))
+        for raw in data.get("notifications") or []:
+            if not isinstance(raw, dict) or not UUID.match(str(raw.get("id", ""))):
+                continue
+            if bool(raw.get("readAt")) != (search == READ):
+                continue
+            items.append({
+                "id": raw["id"],
+                "type": clean(raw.get("type"))[:80],
+                "title": clean(raw.get("title")) or "PodOS",
+                "body": clean(raw.get("body")),
+                "action": str(raw.get("action") or "")[:2000],
+                "url": link_for(raw.get("action")),
+                "createdAt": clean(raw.get("createdAt"))[:40],
+                "readAt": clean(raw.get("readAt"))[:40],
+                "image": str(raw.get("image") or "")[:300],
+            })
+            keys.add(group_key(items[-1]))
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    return items, bool(token)
+
+
+def group(items, read_only_limit=None):
+    """Group notifications by thread. A thread with any unread notification
+    is unread and shows its newest unread one; others show their newest.
+    `read_only_limit` caps the fully read threads, never the unread ones."""
+    groups = {}
+    for item in items:
+        groups.setdefault(group_key(item), {})[item["id"]] = item
+    out = []
+    for key, by_id in groups.items():
+        members = sorted(by_id.values(), key=lambda n: n["createdAt"], reverse=True)
+        unread = [m for m in members if not m["readAt"]]
+        head = (unread or members)[0]
+        out.append({
+            "key": key,
+            "ids": [m["id"] for m in members],
+            "unreadIds": [m["id"] for m in unread],
+            "headId": head["id"],
+            "count": len(members),
+            "unread": len(unread),
+            "title": head["title"],
+            "body": head["body"],
+            "url": head["url"],
+            "type": head["type"],
+            "createdAt": head["createdAt"],
+            "image": head["image"],
+        })
+    out.sort(key=lambda g: g["createdAt"], reverse=True)
+    if read_only_limit is not None:
+        kept, read_only = [], 0
+        for entry in out:
+            if not entry["unread"]:
+                read_only += 1
+                if read_only > read_only_limit:
+                    continue
+            kept.append(entry)
+        out = kept
+    return out
+
+
+def popups(items, limit):
+    """Send a desktop pop-up for each notification not seen on an earlier run."""
+    try:
+        seen = set(json.loads(SEEN_FILE.read_text()))
+        first_run = False
+    except (OSError, ValueError, TypeError):
+        seen, first_run = set(), True
+
+    fresh = [n for n in items if n["id"] not in seen]
+    # The first run only records what is already there, so starting the
+    # widget never floods the screen with a backlog.
+    if not first_run:
+        helper = [os.path.realpath(__file__), "--api", API, "--dashboard", DASHBOARD]
+        for item in reversed(fresh[:limit]):
+            notify(item["title"], item["body"], helper, [item["url"], item["id"]],
+                   avatar_for(item["image"]))
+        if len(fresh) > limit:
+            notify(f"{len(fresh) - limit} more PodOS notifications", "Open the PodOS inbox",
+                   helper, [INBOX_URL])
+
+    current = {n["id"] for n in items}
+    # Keep recently seen ids even once read, so a notification that comes
+    # back unread is not announced twice. Bounded to stay small.
+    keep = list(current) + [i for i in seen if i not in current]
+    write_private(SEEN_FILE, json.dumps(keep[:1000]))
+
+
+def notify(title, body, helper, data, image=""):
+    """A pop-up with Open and Mark read buttons. The untrusted URL and id
+    travel after --with, which appends them to each button's own argv;
+    `read` ignores anything that is not a notification id."""
+    command = ["omarchy-notification-send", "--app-name", "PodOS", "-g", "󰂚"]
+    if image:
+        command += ["--image", image]
+    command.append(title)
+    if body:
+        command.append(body)
+    command += ["--action", "Open"] + helper + ["open"]
+    if len(data) > 1:
+        command += ["--action", "Mark read"] + helper + ["read"]
+    command += ["--with"] + data
+    try:
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def with_avatars(groups):
+    for entry in groups:
+        entry["avatar"] = avatar_for(entry.pop("image", ""))
+    return groups
+
+
+def mark_read(ids, read=True):
+    failed = []
+    for notification_id in ids:
+        if not UUID.match(notification_id):
+            continue
+        try:
+            api("PATCH", f"/v1/notifications/{notification_id}", {"read": read})
+        except ApiError:
+            failed.append(notification_id)
+    return failed
+
+
+def open_url(url):
+    if link_for(url) != url and url != INBOX_URL:
+        url = INBOX_URL
+    subprocess.Popen(["xdg-open", url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def int_arg(args, flag, default, low, high):
+    if flag in args:
+        try:
+            return max(low, min(high, int(args[args.index(flag) + 1])))
+        except (IndexError, ValueError):
+            pass
+    return default
+
+
+def main(argv):
+    argv, api, dashboard = list(argv), None, None
+    for flag in ("--api", "--dashboard"):
+        while flag in argv:
+            index = argv.index(flag)
+            if index + 1 >= len(argv):
+                emit({"state": "error", "message": f"{flag} needs a URL"}, 2)
+            value = argv[index + 1]
+            del argv[index:index + 2]
+            if flag == "--api":
+                api = value
+            else:
+                dashboard = value
+    try:
+        configure(api, dashboard)
+    except SystemExit as error:
+        emit({"state": "error", "message": str(error)}, 2)
+    command = argv[0] if argv else "list"
+    args = argv[1:]
+    if command in ("-h", "--help", "help"):
+        sys.stdout.write(__doc__)
+        sys.exit(0)
+    try:
+        if command == "list":
+            limit = int_arg(args, "--limit", 100, 1, 500)
+            items, more = fetch(UNREAD, limit)
+            if "--notify" in args:
+                popups(items, int_arg(args, "--popup-limit", 5, 1, 20))
+            read_groups = int_arg(args, "--read-groups", 20, 0, 100)
+            tasks = None
+            if "--tasks-project" in args:
+                index = args.index("--tasks-project") + 1
+                tasks = my_tasks(args[index] if index < len(args) else "")
+            read_items, _ = fetch(READ, 500, read_groups) if read_groups > 0 else ([], False)
+            emit({
+                "state": "ready",
+                "unread": len(items),
+                "more": more,
+                "groups": with_avatars(group(items + read_items, read_groups)),
+                "tasks": tasks,
+                "inboxUrl": INBOX_URL,
+                "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+        if command == "read":
+            failed = mark_read(args)
+            emit({"state": "ready" if not failed else "error", "failed": failed}, 1 if failed else 0)
+        if command == "unread":
+            failed = mark_read(args, read=False)
+            emit({"state": "ready" if not failed else "error", "failed": failed}, 1 if failed else 0)
+        if command == "open":
+            if not args:
+                emit({"state": "error", "message": "open needs a URL"}, 2)
+            failed = mark_read(args[1:])
+            open_url(args[0])
+            emit({"state": "ready", "failed": failed})
+        if command == "read-all":
+            items, _ = fetch(UNREAD, 500)
+            failed = mark_read([n["id"] for n in items])
+            emit({"state": "ready" if not failed else "error", "marked": len(items) - len(failed)},
+                 1 if failed else 0)
+        emit({"state": "error", "message": f"unknown command {command}"}, 2)
+    except ApiError as error:
+        emit({"state": error.state, "message": str(error)}, 1)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
