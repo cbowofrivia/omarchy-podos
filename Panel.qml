@@ -367,6 +367,8 @@ Panel {
             }
           }
 
+          PanelSeparator { foreground: root.foreground }
+
           ButtonGroup {
             value: root.tab
             focusable: false
