@@ -34,17 +34,31 @@ Item {
   readonly property string dashboardUrl: baseUrlSetting("dashboardUrl", "https://podos.io")
   readonly property string inboxUrl: dashboardUrl + "/inbox?search-notification=group%3Auser"
   readonly property string boardUrl: dashboardUrl + "/workflow" + (tasksProject ? "?project=" + tasksProject : "")
-  // Unread and read threads in one list, newest first, with overrides applied.
-  readonly property var visibleGroups: groups.map(function(g) {
-    var state = root.overrides[g.key]
-    if (state === "read") return Object.assign({}, g, { unread: 0, unreadIds: [] })
-    if (state === "unread" && g.unread === 0) return Object.assign({}, g, { unread: 1, unreadIds: [g.headId] })
-    return g
-  })
+  // The last list the panel was given, so a refresh that changes nothing
+  // leaves `groups` and `tasks` alone and the panel keeps its rows.
+  property string dataSignature: ""
   readonly property int visibleUnread: {
     var total = 0
-    for (var i = 0; i < visibleGroups.length; i++) total += visibleGroups[i].unread
+    for (var i = 0; i < groups.length; i++) total += unreadCount(groups[i])
     return total
+  }
+
+  // A thread's unread count with any pending click applied. Rows bind to
+  // this rather than to a rebuilt list, so marking one read or unread
+  // updates that row in place instead of recreating every row.
+  function unreadCount(group) {
+    if (!group) return 0
+    var state = overrides[group.key]
+    if (state === "read") return 0
+    if (state === "unread" && group.unread === 0) return 1
+    return group.unread
+  }
+
+  function unreadIdsOf(group) {
+    var state = overrides[group.key]
+    if (state === "read") return []
+    if (state === "unread" && group.unread === 0) return [group.headId]
+    return group.unreadIds
   }
 
   function setting(name, fallback) {
@@ -100,11 +114,17 @@ Item {
     if (state !== "ready") return
     unread = Number(data.unread) || 0
     more = data.more === true
-    groups = Array.isArray(data.groups) ? data.groups : []
-    tasks = Array.isArray(data.tasks) ? data.tasks : []
-    user = data.user && typeof data.user === "object" ? data.user : null
     fetchedAt = String(data.fetchedAt || "")
     overrides = ({})
+    var nextGroups = Array.isArray(data.groups) ? data.groups : []
+    var nextTasks = Array.isArray(data.tasks) ? data.tasks : []
+    var nextUser = data.user && typeof data.user === "object" ? data.user : null
+    var signature = JSON.stringify([nextGroups, nextTasks, nextUser])
+    if (signature === dataSignature) return
+    dataSignature = signature
+    groups = nextGroups
+    tasks = nextTasks
+    user = nextUser
   }
 
   function runAction(argv, status) {
@@ -124,17 +144,19 @@ Item {
   // Opening a thread marks its unread notifications read.
   function openGroup(group) {
     if (!group) return
-    if (group.unread > 0) override([group.key], "read")
-    runAction(["open", String(group.url)].concat(group.unreadIds), "Opening in PodOS…")
+    var ids = unreadIdsOf(group)
+    if (ids.length > 0) override([group.key], "read")
+    runAction(["open", String(group.url)].concat(ids), "Opening in PodOS…")
   }
 
   // Unread threads become read; read threads get their newest
   // notification back as unread.
   function toggleRead(group) {
     if (!group) return
-    if (group.unread > 0) {
+    if (unreadCount(group) > 0) {
+      var ids = unreadIdsOf(group)
       override([group.key], "read")
-      runAction(["read"].concat(group.unreadIds), "Marking read…")
+      runAction(["read"].concat(ids), "Marking read…")
     } else {
       override([group.key], "unread")
       runAction(["unread", String(group.headId)], "Marking unread…")
@@ -142,7 +164,7 @@ Item {
   }
 
   function markAllRead() {
-    var keys = visibleGroups.filter(function(g) { return g.unread > 0 }).map(function(g) { return g.key })
+    var keys = groups.filter(function(g) { return unreadCount(g) > 0 }).map(function(g) { return g.key })
     if (keys.length === 0) return
     override(keys, "read")
     runAction(["read-all"], "Marking all read…")

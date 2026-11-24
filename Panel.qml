@@ -19,6 +19,12 @@ Panel {
   property string tab: "notifications"
   property bool cursorActive: false
   property real now: Date.now()
+  // Local midnight of `now`. Day headings read this rather than `now`, so
+  // the 30-second clock tick only rebuilds the rows when the day changes.
+  // Set only by tick(), never bound to `now`.
+  property real today: 0
+
+  Component.onCompleted: tick()
 
   readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
@@ -28,7 +34,7 @@ Panel {
   readonly property var tabs: podos.tasksProject !== "" ? ["notifications", "tasks"] : ["notifications"]
   readonly property bool tasksTab: tab === "tasks"
   // Rows the cursor walks: notification groups, or tasks on the Tasks tab.
-  readonly property var rows: tasksTab ? podos.tasks : podos.visibleGroups
+  readonly property var rows: tasksTab ? podos.tasks : podos.groups
   // Notification rows with a heading inserted wherever the day changes.
   readonly property var entries: {
     var out = []
@@ -90,14 +96,22 @@ Panel {
     return strings.t("time.days").arg(Math.floor(s / 86400))
   }
 
+  function startOfDay(ms) {
+    var day = new Date(ms)
+    day.setHours(0, 0, 0, 0)
+    return day.getTime()
+  }
+
+  function tick() {
+    now = Date.now()
+    var day = startOfDay(now)
+    if (day !== today) today = day
+  }
+
   function dayLabel(iso) {
     var then = new Date(Date.parse(String(iso || "")))
     if (!isFinite(then.getTime())) return ""
-    var today = new Date(now)
-    today.setHours(0, 0, 0, 0)
-    var day = new Date(then.getTime())
-    day.setHours(0, 0, 0, 0)
-    var days = Math.round((today.getTime() - day.getTime()) / 86400000)
+    var days = Math.round((today - startOfDay(then.getTime())) / 86400000)
     var locale = Qt.locale(Commons.I18n.formatLocale)
     if (days <= 0) return strings.t("day.today")
     if (days === 1) return strings.t("day.yesterday")
@@ -169,7 +183,7 @@ Panel {
     cursorActive = false
     rowIndex = 0
     tab = "notifications"
-    now = Date.now()
+    tick()
     if (panelFlick) panelFlick.contentY = 0
     podos.refresh()
     Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
@@ -186,7 +200,7 @@ Panel {
     interval: 30000
     repeat: true
     running: root.opened
-    onTriggered: root.now = Date.now()
+    onTriggered: root.tick()
   }
 
   ShellIpc {
@@ -420,41 +434,49 @@ Panel {
 
             Repeater {
               model: root.entries
+              // Each entry builds only the row it shows: a day heading
+              // doesn't also carry a hidden notification row and avatar.
               Item {
                 id: entryItem
                 required property var modelData
                 readonly property var entry: modelData
                 width: rowColumn.width
-                implicitHeight: dayHeader.visible ? dayHeader.implicitHeight
-                  : (notificationRow.visible ? notificationRow.implicitHeight : taskRow.implicitHeight)
+                implicitHeight: entryLoader.item ? entryLoader.item.implicitHeight : 0
                 height: implicitHeight
 
-                PanelSectionHeader {
-                  id: dayHeader
-                  visible: entryItem.entry.kind === "day"
+                Loader {
+                  id: entryLoader
                   width: parent.width
-                  topPadding: Style.space(10)
-                  bottomPadding: Style.space(2)
-                  leftPadding: Style.spacing.rowPaddingX
-                  text: visible ? entryItem.entry.label : ""
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
+                  sourceComponent: entryItem.entry.kind === "day" ? dayComponent
+                    : (entryItem.entry.kind === "task" ? taskComponent : notificationComponent)
                 }
 
-                NotificationRow {
-                  id: notificationRow
-                  visible: entryItem.entry.kind === "notification"
-                  width: parent.width
-                  group: visible ? entryItem.entry.item : null
-                  rowIndex: visible ? entryItem.entry.index : -1
+                Component {
+                  id: dayComponent
+                  PanelSectionHeader {
+                    topPadding: Style.space(10)
+                    bottomPadding: Style.space(2)
+                    leftPadding: Style.spacing.rowPaddingX
+                    text: entryItem.entry.label
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                  }
                 }
 
-                TaskRow {
-                  id: taskRow
-                  visible: entryItem.entry.kind === "task"
-                  width: parent.width
-                  task: visible ? entryItem.entry.item : null
-                  rowIndex: visible ? entryItem.entry.index : -1
+                Component {
+                  id: notificationComponent
+                  NotificationRow {
+                    group: entryItem.entry.item
+                    rowIndex: entryItem.entry.index
+                  }
+                }
+
+                Component {
+                  id: taskComponent
+                  TaskRow {
+                    task: entryItem.entry.item
+                    rowIndex: entryItem.entry.index
+                  }
                 }
               }
             }
@@ -476,9 +498,11 @@ Panel {
     id: row
     property var group: null
     property int rowIndex: -1
-    readonly property bool isUnread: group !== null && group.unread > 0
+    // Read live from the service, so a click updates this row in place.
+    readonly property int unreadNow: podos.unreadCount(group)
+    readonly property bool isUnread: unreadNow > 0
     // Unread threads count what is new; read ones count everything.
-    readonly property int shownCount: group ? (isUnread ? group.unread : group.count) : 0
+    readonly property int shownCount: group ? (isUnread ? unreadNow : group.count) : 0
     readonly property real padY: Style.spacing.lg
 
     hasCursor: root.cursorActive && root.rowIndex === rowIndex

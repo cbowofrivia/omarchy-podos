@@ -58,6 +58,19 @@ notifications already there, and after that each new one gets a desktop pop-up.
   `strings.t()` / `strings.tn()`.
 - **Spacing and motion.** Use `Style.space()`, `Style.spacing.*` and
   `Style.duration()`.
+- **Performance.** The panel shares one process with the whole bar and the
+  pop-ups, so a stall here freezes all of them.
+  - No `MultiEffect`, `layer.enabled` or other effects in per-row items. A
+    per-avatar `MultiEffect` once made every panel close freeze the shell for
+    10-25 seconds. `Avatar.qml` rounds photos with `ShapePath.fillItem`.
+  - Each row builds only what it shows (one `Loader` per entry).
+  - Don't rebuild the rows unless the data changed. `Service.apply()` skips
+    unchanged refreshes, clicks go through `overrides` that rows read in
+    place, and day headings follow `today`, not the 30-second `now`.
+  - To check for stalls, time
+    `qs ipc -n -p /usr/share/omarchy/shell call cbowofrivia.podos status`
+    in a loop while opening, refreshing and closing the panel. A healthy
+    shell answers in tens of milliseconds.
 - **Testing.**
   - Saving a file doesn't always reload the plugin. Run `omarchy restart shell`,
     then check `journalctl --user --since -1min -o cat | grep -i podos` for QML
